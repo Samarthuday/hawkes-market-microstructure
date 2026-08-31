@@ -3,28 +3,37 @@ import pandas as pd
 
 def process_trade_data(data):
     data = data.copy()
-    data["timestamp"] = pd.to_datetime(data["time"], unit="us", utc=True)
-    data["inter_arrival_us"] = data["time"].diff()
-    data["inter_arrival_seconds"] = data["inter_arrival_us"] / 1_000_000
-    return data
 
-if __name__ == "__main__":
-
-    from data_loader import load_trade_data
-
-    data = load_trade_data(
-        "data/BTCUSDT-trades-2025-01.csv",
-        nrows=1_000_000
+    data["timestamp"] = pd.to_datetime(
+        data["timestamp_us"],
+        unit="us",
+        utc=True
     )
 
-    processed_data = process_trade_data(data)
+    data["inter_arrival_us"] = data["timestamp_us"].diff()
 
-    print(processed_data.head())
-    print(processed_data.tail())
-    print(processed_data.shape)
+    data["inter_arrival_seconds"] = (
+        data["inter_arrival_us"] / 1_000_000
+    )
 
-    print(
-    processed_data[
-        ["id", "timestamp", "inter_arrival_us", "inter_arrival_seconds",]
-    ]
-)
+    return data
+
+
+def extract_event_times(data):
+    event_times = (
+        data[["timestamp"]]
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+        .reset_index(drop=True)
+    )
+
+    return event_times
+
+
+def event_times_to_seconds(event_times):
+    event_difference = (
+        event_times["timestamp"] - event_times["timestamp"].iloc[0]
+    )
+
+    return event_difference.dt.total_seconds()

@@ -36,6 +36,58 @@ def calculate_mean_inter_arrival(inter_arrivals):
 
     return inter_arrivals.mean()
 
+def exponential_pdf(x, intensity):
+    return intensity * np.exp(-intensity * x)
+
+def plot_exponential_pdf(inter_arrivals, intensity):
+    import matplotlib.pyplot as plt
+
+    x = np.linspace(0, inter_arrivals.quantile(0.99), 500)
+    y = exponential_pdf(x, intensity)
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, y, label="Exponential")
+    plt.hist(inter_arrivals, bins=100, density=True, alpha=0.6, color="blue", label="Inter-arrival times")
+    plt.xlabel("Inter-arrival time (seconds)")
+    plt.ylabel("Probability Density Function (PDF)")
+    plt.title("Empirical vs Theoretical Exponential Distribution")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+def calculate_coefficient_of_variation(inter_arrivals):
+
+    mean = inter_arrivals.mean()
+    std = inter_arrivals.std()
+
+    cv = std / mean
+
+    return cv
+
+def exponential_cdf(x, intensity):
+    return 1 - np.exp(-intensity * x)
+
+def empirical_cdf(inter_arrivals):
+    sorted_data = np.sort(inter_arrivals)
+    cdf = np.arange(1, len(sorted_data) + 1) / len(sorted_data)
+    return sorted_data, cdf
+
+def plot_cdf_comparison(inter_arrivals, intensity):
+    x, empirical = empirical_cdf(inter_arrivals)
+
+    theoretical_cdf = exponential_cdf(x, intensity)
+
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, empirical, label="Empirical")
+    plt.plot(x, theoretical_cdf, label="Theoretical")
+    plt.xlabel("Inter-arrival time (seconds)")
+    plt.ylabel("Cumulative Distribution Function (CDF)")
+    plt.title("Empirical vs Theoretical Exponential Distribution")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
 
     from data_loader import load_trade_data
@@ -76,3 +128,5 @@ if __name__ == "__main__":
 
     print("\nFirst 10 inter-arrival times:")
     print(inter_arrivals.head(10))
+    plot_exponential_pdf(inter_arrivals, intensity)
+    plot_cdf_comparison(inter_arrivals, intensity)

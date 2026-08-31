@@ -1,14 +1,13 @@
 import pandas as pd
 
 
-
 def load_trade_data(file_path, nrows=None):
     columns = [
-        "id",
+        "trade_id",
         "price",
-        "qty",
-        "quote_qty",
-        "time",
+        "quantity",
+        "quote_quantity",
+        "timestamp_us",
         "is_buyer_maker",
         "is_best_match",
     ]
