@@ -88,6 +88,46 @@ def plot_cdf_comparison(inter_arrivals, intensity):
     plt.tight_layout()
     plt.show()
 
+def calculate_fano_factor(event_times, window_size):
+    total_time = (event_times.max() - event_times.min()).total_seconds()
+    num_windows = int(total_time // window_size) # num windows=⌊T/Δ​⌋
+    window_indices = np.floor((event_times - event_times.min()).dt.total_seconds() / window_size).astype(int) # .dt.total_seconds() converts the time differences into ordinary numbers.
+    window_counts = np.bincount(window_indices, minlength=num_windows) # np.bincount() essentially asks: How many times does each number appear?
+    mean = np.mean(window_counts)
+    variance = np.var(window_counts)
+    fano_factor = variance / mean if mean != 0 else float('nan')
+    return fano_factor
+
+def create_event_count_series(event_times, window_size):
+    elapsed_time = (event_times.max() - event_times.min()).total_seconds()
+    num_windows = int(np.ceil(elapsed_time / window_size))
+    window_edges = np.arange(0, num_windows + 1) * window_size
+    window_indices = np.floor((event_times - event_times.min()).dt.total_seconds() / window_size).astype(int)
+    window_counts = np.bincount(window_indices, minlength=num_windows)
+    event_count_series = pd.Series(window_counts, index=pd.IntervalIndex.from_arrays(window_edges[:-1], window_edges[1:], closed='left'))
+    return event_count_series
+
+def calculate_autocorrelation(event_count_series, lag):
+    mean = event_count_series.mean()
+    variance = np.var(event_count_series)
+    n = len(event_count_series)
+    if n <= lag:
+        raise ValueError("Lag is too large for the length of the series.")
+    autocovariance = np.sum((event_count_series[:-lag] - mean) * (event_count_series[lag:] - mean)) / (n - lag)
+    autocorrelation = autocovariance / variance if variance != 0 else float('nan')
+    return autocorrelation
+
+# A simpler way to calculate autocorrelation using pandas built-in function:
+# def calculate_autocorrelation(event_count_series, lag):
+
+#     return event_count_series.autocorr(lag=lag)
+
+def calculate_autocorrelations(event_count_series, max_lag):
+    autocorrelations = {}
+    for lag in range(1, max_lag + 1):
+        autocorrelations[lag] = calculate_autocorrelation(event_count_series, lag)
+    return autocorrelations
+
 if __name__ == "__main__":
 
     from data_loader import load_trade_data
@@ -129,4 +169,18 @@ if __name__ == "__main__":
     print("\nFirst 10 inter-arrival times:")
     print(inter_arrivals.head(10))
     plot_exponential_pdf(inter_arrivals, intensity)
+    event_count_series = create_event_count_series(timestamps, window_size=10)
+    autocorrelations = calculate_autocorrelations(
+        event_count_series,
+        max_lag=20
+    )
+    print("\nAutocorrelations:")
+    for lag, value in autocorrelations.items():
+        print(f"Lag {lag:>2}: {value:.6f}")
+    print("\nEvent count series:")
+    print(event_count_series)
+    print("\nFano Factors:")
+    for window_size in [1, 2, *range(5, 101, 5)]:
+        fano_factor = calculate_fano_factor(timestamps, window_size=window_size)
+        print(f"Window size {window_size:>3}: {fano_factor:.6f}")
     plot_cdf_comparison(inter_arrivals, intensity)
