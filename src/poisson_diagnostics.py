@@ -128,6 +128,21 @@ def calculate_autocorrelations(event_count_series, max_lag):
         autocorrelations[lag] = calculate_autocorrelation(event_count_series, lag)
     return autocorrelations
 
+def calculate_window_intensity(event_count_series, window_size):
+    return event_count_series / window_size
+
+def plot_window_intensity(event_count_series, window_size):
+    import matplotlib.pyplot as plt
+
+    window_intensity = calculate_window_intensity(event_count_series, window_size)
+    plt.figure(figsize=(10, 6))
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Intensity (events/second)")
+    plt.title(f"Event Intensity Over Time (Window Size: {window_size} seconds)")
+    plt.plot(window_intensity.index.mid, window_intensity.values, marker='o', linestyle='-')
+    plt.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
 
     from data_loader import load_trade_data
@@ -179,6 +194,7 @@ if __name__ == "__main__":
         print(f"Lag {lag:>2}: {value:.6f}")
     print("\nEvent count series:")
     print(event_count_series)
+    plot_window_intensity(event_count_series, window_size=10)
     print("\nFano Factors:")
     for window_size in [1, 2, *range(5, 101, 5)]:
         fano_factor = calculate_fano_factor(timestamps, window_size=window_size)
