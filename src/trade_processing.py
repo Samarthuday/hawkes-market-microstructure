@@ -71,7 +71,7 @@ def extract_event_times(data):
         data[["timestamp"]]
         .dropna()
         .drop_duplicates()
-        .sort_values()
+        .sort_values(by="timestamp")
         .reset_index(drop=True)
     )
 
