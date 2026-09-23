@@ -19,7 +19,7 @@ The project begins by testing whether trade arrivals can reasonably be modeled a
 - **Fitted exponential-kernel Hawkes:** `mu=2.301, alpha=23.226, beta=59.769` → branching ratio **n ≈ 0.389** (95% CI ±0.003), excitation half-life **≈11.6ms**.
 - **Out-of-sample:** Hawkes beats Poisson on held-out log-likelihood on a chronological 70/30 split (1.12 vs 0.52 per event) and in **every** rolling block-fold — not just in-sample.
 - **Nonstationary:** the branching ratio drifts over the sample (block-to-block std ≈57× larger than sampling-noise-only uncertainty) — a single time-homogeneous fit understates the real picture.
-- **Buy/sell bivariate model:** same-side excitation (buy→buy ≈0.34, sell→sell ≈0.41) is ≈42× stronger than cross-side excitation (≈0.01) — self-excitation here is almost entirely a same-side, order-splitting-like phenomenon.
+- **Buy/sell bivariate model:** same-side excitation (buy→buy ≈0.34, sell→sell ≈0.41) is ≈43× stronger than cross-side excitation (≈0.008–0.01) — self-excitation here is overwhelmingly a same-side, order-splitting-like phenomenon, though a likelihood-ratio test confirms the small cross-side effect is real (p ≈ 1e-141), not just noise.
 - **Power-law kernel extension:** wins on AIC/BIC, but its fitted shape converges to mimic the exponential kernel's own decay timescale — nonstationarity, not kernel shape, looks like the more likely remaining source of misfit.
 - Recursive O(n) intensity calculation is up to 124× faster than the direct O(n²) implementation at 20,000 events, and is what makes fitting this model on 200k+ events tractable at all.
 - **Two real bugs found via external review and fixed** (with regression tests added): an autocorrelation calculation that silently multiplied observations by themselves due to pandas index alignment (previously reported ≈0.999 at every lag; true value ≈0.42 decaying to ≈0.21), and a Fano-factor calculation that leaked a partial trailing window into the variance/mean estimate.
@@ -720,20 +720,34 @@ Fitted on the same 1,000,000-trade subset (106,946 buy-initiated events, 114,231
 
 ```text
 mu_B = 1.190, mu_S = 1.122
-alpha_BB = 18.485, alpha_BS = 0.423, alpha_SB = 0.561, alpha_SS = 22.605
-beta = 54.673 (shared)
+alpha_BB = 18.477, alpha_BS = 0.423, alpha_SB = 0.541, alpha_SS = 22.596
+beta = 54.645 (shared)
 ```
+
+> **Bug fix note.** Buy and sell timestamps are deduplicated independently, so a buy-initiated and a sell-initiated trade can legitimately share the exact same microsecond timestamp (63 such ties exist in this dataset). The merged buy/sell timeline used to process events strictly one at a time in concatenation order, so whichever side happened to be concatenated first would spuriously appear to excite the simultaneous event on the other side at Δt=0 — an arbitrary, asymmetric artifact rather than a real effect. The fix processes every tie group as a batch (all tied events see the same pre-group state; none of them see each other), verified both on a hand-built example and with a regression test. The effect on the fitted parameters is, as expected given only 63/221k+ events are affected, negligible (e.g. alpha_SB moves from 0.561 to 0.541); both starting points (`beta0 ∈ {10, 60}`) converge to the same optimum to 8+ significant figures, confirming this is a well-identified global optimum rather than an artifact of either fix.
 
 Branching matrix (row = triggered side, column = triggering side) and its spectral radius:
 
 | | Buy (source) | Sell (source) |
 |---|---:|---:|
 | **Buy (target)** | 0.3381 | 0.0077 |
-| **Sell (target)** | 0.0103 | 0.4135 |
+| **Sell (target)** | 0.0099 | 0.4135 |
 
-Spectral radius ≈ 0.414 (stable). Average same-side excitation (0.376) is **≈42× larger** than average cross-side excitation (0.009).
+Spectral radius ≈ 0.415 (stable). Average same-side excitation (0.376) is **≈43× larger** than average cross-side excitation (0.0088).
 
-**Interpretation:** self-excitation in this market is overwhelmingly a **same-side** phenomenon — a buy-initiated trade makes further buy-initiated trades much more likely, and likewise for sells, but a trade on one side barely excites the opposite side at all. This is consistent with order splitting / momentum-style clustering of same-direction aggressive flow, rather than a liquidity-replenishment or mean-reversion mechanism (which would instead predict strong cross-side excitation as one side's aggression pulls in opposing liquidity). This also reframes the earlier single-stream branching ratio (≈0.39): it is close to the *average* of the two same-side terms (0.338, 0.414), suggesting the single-stream model was implicitly averaging over two similar-magnitude same-side effects while being nearly blind to the (much smaller) cross-side interaction.
+**Is that cross-side excitation statistically real, or just an artifact of a parameterization that can't represent exactly zero?** Since `alpha_BS, alpha_SB` are fit in log-space, the optimizer can never return exactly 0 for them even if the true value were zero. To test this honestly, `test_cross_excitation_significance` fits a restricted model with `alpha_BS = alpha_SB = 0` fixed and compares it to the unrestricted model via a likelihood-ratio test:
+
+```text
+H0: alpha_BS = alpha_SB = 0
+Full model log-likelihood:       97222.02
+Restricted model log-likelihood: 96899.62
+LR statistic (df=2):             644.81
+p-value:                         9.6e-141
+```
+
+The unrestricted model fits overwhelmingly better — the small cross-side excitation is **statistically highly significant**, not just noise from the parameterization. But "statistically significant" and "economically large" are different claims here: with ~221k events, even a tiny true effect is easily detectable. The right summary is that cross-side excitation is **real but small** (n ≈ 0.008–0.01), not that it's absent.
+
+**Interpretation:** self-excitation in this market is overwhelmingly a **same-side** phenomenon — a buy-initiated trade makes further buy-initiated trades much more likely, and likewise for sells. A trade on one side does measurably (if weakly) excite the opposite side too, rather than having literally zero effect. This is consistent with order splitting / momentum-style clustering of same-direction aggressive flow dominating, with a smaller genuine liquidity-replenishment-style cross-side effect layered on top, rather than either mechanism operating alone. This also reframes the earlier single-stream branching ratio (≈0.39): it is close to the *average* of the two same-side terms (0.338, 0.414), suggesting the single-stream model was implicitly averaging over two similar-magnitude same-side effects while being nearly blind to the (much smaller, though real) cross-side interaction.
 
 ---
 
@@ -845,7 +859,7 @@ The ultimate goal is not simply to fit a Hawkes process, but to quantify **marke
 - **How quickly does this effect decay?** Very fast — a half-life on the order of 0.01 seconds under both the exponential and power-law kernels, concentrated within the 0.1 ms–1 s range examined in the aftershock analysis.
 - **What fraction of observed activity can be attributed to endogenous excitation?** For a stationary linear Hawkes process the branching ratio $n$ is exactly this quantity: under the fitted **full-sample** exponential specification, $n \approx 0.389$ corresponds to roughly **39%** of events being, in expectation, triggered by prior events rather than the exogenous baseline. Because [Nonstationarity](#nonstationarity) shows the parameters are measurably time-varying, this 39% should be read as a full-sample *average*, not a constant structural fraction that holds throughout the ≈16-hour period — it ranges from roughly 0.16 to 0.53 across rolling sub-windows.
 - **Does excitation differ across market conditions?** Yes — both the rolling-window and block-wise fits show it varies substantially over just a 16-hour sample; the process is not stationary.
-- **Are buy and sell orders characterized by different excitation dynamics?** Yes, dramatically: the bivariate model finds same-side excitation (buy→buy ≈ 0.34, sell→sell ≈ 0.41) is ≈42× stronger than cross-side excitation (≈0.008–0.01) — self-excitation here is almost entirely a same-side phenomenon, not a liquidity-replenishment effect (see [Buy/Sell Bivariate Hawkes Model](#buysell-bivariate-hawkes-model)).
+- **Are buy and sell orders characterized by different excitation dynamics?** Yes, dramatically: the bivariate model finds same-side excitation (buy→buy ≈ 0.34, sell→sell ≈ 0.41) is ≈43× stronger than cross-side excitation (≈0.008–0.01) — self-excitation here is overwhelmingly a same-side phenomenon. The small cross-side effect is statistically significant (likelihood-ratio test, p ≈ 1e-141) rather than an artifact, but it is economically minor next to the same-side effect (see [Buy/Sell Bivariate Hawkes Model](#buysell-bivariate-hawkes-model)).
 
 The project treats the Hawkes process as a quantitative framework for studying **order-flow clustering and market microstructure dynamics**, and now has a validated, fitted, and stress-tested model rather than only qualitative motivation.
 
