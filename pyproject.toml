@@ -1,0 +1,19 @@
+[project]
+name = "hawkes-market-microstructure"
+version = "0.1.0"
+description = "Point-process modeling of BTC/USDT trade-arrival clustering and signed order-flow dynamics using Poisson and Hawkes processes."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "statsmodels",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,12 +1,30 @@
 # Market Order Self-Excitation with Hawkes Processes
 
-A quantitative finance research project studying the temporal structure, clustering, and self-excitation of market order arrivals using **Poisson and Hawkes point processes**.
+A quantitative finance research project studying the temporal structure, clustering, and self-excitation of trade arrivals using **Poisson and Hawkes point processes**.
 
 The central question is:
 
-> **Does the arrival of one market order increase the probability of subsequent orders?**
+> **Does the arrival of one aggressive (market) order increase the probability of subsequent orders?**
 
-The project begins by testing whether market-order arrivals can reasonably be modeled as a homogeneous Poisson process. When the empirical data exhibits clustering and temporal dependence inconsistent with the Poisson assumption, a **Hawkes process** is introduced to model the resulting self-excitation.
+The project begins by testing whether trade arrivals can reasonably be modeled as a homogeneous Poisson process. When the empirical data exhibits clustering and temporal dependence inconsistent with the Poisson assumption, a **Hawkes process** is introduced to model the resulting self-excitation.
+
+> **A note on terminology.** The data used here is Binance's `trades` dataset: one row is one trade **execution**, not necessarily one market order — a single large aggressive order can fill against several resting counterparties and generate multiple trade rows at the same (or nearly the same) timestamp. This is not a minor caveat: [Robustness to Event Definition](#robustness-to-event-definition) finds that **83.5% of trades share an exact microsecond timestamp with another trade**, almost certainly reflecting exactly this. Where this README says "market order" it means "aggressive trade execution, aggregated to the unique-timestamp event definition unless stated otherwise" — the more precise phrasing throughout the analysis sections below.
+
+---
+
+## Key Results
+
+- Analyzed 221,114 unique trade-arrival events (from the first 1,000,000 raw BTC/USDT trades, ≈16.3 hours, January 2025).
+- The homogeneous-Poisson hypothesis is decisively rejected: Fano factors up to ≈136 (vs. 1 for Poisson), autocorrelation ≈0.42 at lag 1 decaying to ≈0.21 at lag 20 (corrected — see below), and a >143,000-point log-likelihood gap in favor of Hawkes.
+- **Fitted exponential-kernel Hawkes:** `mu=2.301, alpha=23.226, beta=59.769` → branching ratio **n ≈ 0.389** (95% CI ±0.003), excitation half-life **≈11.6ms**.
+- **Out-of-sample:** Hawkes beats Poisson on held-out log-likelihood on a chronological 70/30 split (1.12 vs 0.52 per event) and in **every** rolling block-fold — not just in-sample.
+- **Nonstationary:** the branching ratio drifts over the sample (block-to-block std ≈57× larger than sampling-noise-only uncertainty) — a single time-homogeneous fit understates the real picture.
+- **Buy/sell bivariate model:** same-side excitation (buy→buy ≈0.34, sell→sell ≈0.41) is ≈42× stronger than cross-side excitation (≈0.01) — self-excitation here is almost entirely a same-side, order-splitting-like phenomenon.
+- **Power-law kernel extension:** wins on AIC/BIC, but its fitted shape converges to mimic the exponential kernel's own decay timescale — nonstationarity, not kernel shape, looks like the more likely remaining source of misfit.
+- Recursive O(n) intensity calculation is up to 124× faster than the direct O(n²) implementation at 20,000 events, and is what makes fitting this model on 200k+ events tractable at all.
+- **Two real bugs found via external review and fixed** (with regression tests added): an autocorrelation calculation that silently multiplied observations by themselves due to pandas index alignment (previously reported ≈0.999 at every lag; true value ≈0.42 decaying to ≈0.21), and a Fano-factor calculation that leaked a partial trailing window into the variance/mean estimate.
+
+See [Current Findings](#current-findings) and [Research Interpretation](#research-interpretation) for the full picture, or jump straight to any section below.
 
 ---
 
@@ -33,10 +51,15 @@ The project begins by testing whether market-order arrivals can reasonably be mo
 - [Robustness Across Time Windows](#robustness-across-time-windows)
 - [Power-Law Kernel Extension](#power-law-kernel-extension)
 - [Three-Way Model Comparison](#three-way-model-comparison)
+- [Stability-Constrained, Multi-Start Optimization](#stability-constrained-multi-start-optimization)
+- [Out-of-Sample Evaluation](#out-of-sample-evaluation)
+- [Parameter Uncertainty](#parameter-uncertainty)
+- [Buy/Sell Bivariate Hawkes Model](#buysell-bivariate-hawkes-model)
 - [Current Findings](#current-findings)
 - [Methodology](#methodology)
 - [Next Steps](#next-steps)
 - [Research Interpretation](#research-interpretation)
+- [Development](#development)
 - [Disclaimer](#disclaimer)
 
 ---
@@ -147,6 +170,9 @@ hawkes-market-microstructure/
 | `event_definition_robustness.py` | Refits the Hawkes model under alternative definitions of an "event". |
 | `time_window_robustness.py` | Refits the Hawkes model on independent time blocks to check the headline finding replicates. |
 | `power_law_hawkes.py` | Power-law (Omori-Utsu) kernel Hawkes model: intensity, truncated log-likelihood, MLE fitting. |
+| `out_of_sample.py` | Chronological train/test split and rolling block-fold held-out log-likelihood evaluation. |
+| `parameter_uncertainty.py` | Asymptotic (Hessian-based) and block-based (model-free) uncertainty estimates for the fitted parameters. |
+| `bivariate_hawkes.py` | Buy/sell bivariate Hawkes model with a 2×2 excitation matrix and shared decay rate. |
 
 ---
 
@@ -600,6 +626,117 @@ The power-law model wins by both AIC and BIC — but given the near-identical de
 
 ---
 
+## Stability-Constrained, Multi-Start Optimization
+
+The original MLE routine in `src/hawkes.py` enforced `mu > 0`, `alpha >= 0`, `beta > 0` via box constraints, but did **not** constrain the stability condition `n = alpha / beta < 1` during optimization — stability was only checked after the fact. `estimate_hawkes_parameters` now optimizes in an unconstrained reparameterization:
+
+```text
+mu    = exp(log_mu)
+beta  = exp(log_beta)
+n     = sigmoid(logit_n)        # guaranteed in (0, 1)
+alpha = n * beta                # so alpha / beta = n < 1 by construction
+```
+
+from a small grid of 3 initial guesses (`n0 ∈ {0.2, 0.5, 0.8}`), keeping whichever converged fit has the lowest negative log-likelihood, and requiring only a finite objective value rather than gating on scipy's `success` flag (BFGS frequently reports `success=False` with a benign "precision loss" message right at a sharp, well-conditioned optimum — gating on it would discard good fits). Every existing caller is unaffected: `.x` is still `[mu, alpha, beta]` in the original, interpretable units.
+
+On the full dataset this converges to `mu=2.301358, alpha=23.226112, beta=59.768948` — matching the original single-start fit to 5+ significant figures, confirming this dataset has one well-separated dominant optimum. The value of the change is guaranteed stability by construction (relevant for the smaller sub-window/block fits elsewhere in this README) rather than a different headline number.
+
+---
+
+## Out-of-Sample Evaluation
+
+`src/out_of_sample.py` addresses a gap in the analysis so far: every comparison above fits and evaluates the model on the *same* data. This module fits on one period and scores held-out log-likelihood on a **later, unseen** period, correctly carrying the fitted excitation state across the train/test boundary (a test-period event just after the split does not start from zero intensity — it still inherits decayed excitation from training-period events, via a closed-form extension of the integrated-intensity formula).
+
+**70/30 chronological split** (train on the first 70% of the observation period, test on the last 30%):
+
+```text
+train events: 134,375   test events: 86,738
+mu=2.070, alpha=25.763, beta=70.278, branching ratio=0.367 (stable)
+
+Held-out log-likelihood per test event:
+  Hawkes:  1.1224
+  Poisson: 0.5202
+```
+
+**Rolling block folds** (fit on block *i*, test on block *i+1*, reusing the 5-block partition from [Robustness Across Time Windows](#robustness-across-time-windows)):
+
+| Fold | Train block | Test block | Hawkes LL/event | Poisson LL/event | Hawkes wins |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 1 | 0.283 | −0.232 | ✓ |
+| 1 | 1 | 2 | 0.989 | 0.250 | ✓ |
+| 2 | 2 | 3 | 0.945 | 0.399 | ✓ |
+| 3 | 3 | 4 | 1.223 | 0.625 | ✓ |
+
+Hawkes beats Poisson out-of-sample in the chronological split and in **every** rolling fold. This is a materially stronger claim than the earlier in-sample AIC/BIC comparison: the model's predictive edge survives on genuinely unseen future data, not just data it was fit to.
+
+---
+
+## Parameter Uncertainty
+
+`src/parameter_uncertainty.py` reports two complementary uncertainty estimates for the fitted exponential-kernel Hawkes parameters, since a bare point estimate (as used everywhere else in this README) doesn't convey how precisely — or for what reason — that number is known.
+
+**Asymptotic (Hessian-based) standard errors**, from inverting a numerically-estimated Hessian of the negative log-likelihood at the MLE and applying the delta method to derived quantities:
+
+```text
+mu               = 2.301358 +/- 0.014202  (95% CI)
+alpha            = 23.226112 +/- 0.393293 (95% CI)
+beta             = 59.768948 +/- 1.151352 (95% CI)
+branching ratio  = 0.388598 +/- 0.003219  (95% CI)
+half-life        = 0.011597 +/- 0.000223  (95% CI, seconds)
+```
+
+**Block-based (model-free) spread**, from the standard deviation of the branching ratio across the 5 independent time blocks used elsewhere:
+
+```text
+Branching ratio across 5 blocks: mean=0.361, std=0.093
+Asymptotic sampling-noise-only SE: 0.0016
+Ratio: 57x
+```
+
+The block-to-block spread is **≈57× larger** than the asymptotic sampling-noise SE. This is the quantitative confirmation of the [Nonstationarity](#nonstationarity) finding: the branching ratio's true uncertainty is dominated by genuine drift over time, not by how precisely a single time-homogeneous fit can be estimated. Reporting only the Hessian-based CI — which is what most textbook treatments stop at — would understate the real uncertainty in this number by more than an order of magnitude.
+
+---
+
+## Buy/Sell Bivariate Hawkes Model
+
+Every model up to this point pools all trades into one stream. `src/bivariate_hawkes.py` splits trades by aggressor side using `is_buyer_maker`:
+
+```text
+is_buyer_maker == False -> the buyer is the taker -> buy-initiated trade
+is_buyer_maker == True  -> the seller is the taker -> sell-initiated trade
+```
+
+and fits a bivariate exponential-kernel Hawkes model with a 2×2 excitation matrix (one shared decay rate `beta` across all four kernels, for computational tractability — see the module docstring):
+
+$$
+\lambda_B(t) = \mu_B + \alpha_{BB}\!\!\sum_{t_j^B<t} e^{-\beta(t-t_j^B)} + \alpha_{BS}\!\!\sum_{t_j^S<t} e^{-\beta(t-t_j^S)}
+$$
+
+$$
+\lambda_S(t) = \mu_S + \alpha_{SB}\!\!\sum_{t_j^B<t} e^{-\beta(t-t_j^B)} + \alpha_{SS}\!\!\sum_{t_j^S<t} e^{-\beta(t-t_j^S)}
+$$
+
+Fitted on the same 1,000,000-trade subset (106,946 buy-initiated events, 114,231 sell-initiated events, ≈48.4%/51.6% split):
+
+```text
+mu_B = 1.190, mu_S = 1.122
+alpha_BB = 18.485, alpha_BS = 0.423, alpha_SB = 0.561, alpha_SS = 22.605
+beta = 54.673 (shared)
+```
+
+Branching matrix (row = triggered side, column = triggering side) and its spectral radius:
+
+| | Buy (source) | Sell (source) |
+|---|---:|---:|
+| **Buy (target)** | 0.3381 | 0.0077 |
+| **Sell (target)** | 0.0103 | 0.4135 |
+
+Spectral radius ≈ 0.414 (stable). Average same-side excitation (0.376) is **≈42× larger** than average cross-side excitation (0.009).
+
+**Interpretation:** self-excitation in this market is overwhelmingly a **same-side** phenomenon — a buy-initiated trade makes further buy-initiated trades much more likely, and likewise for sells, but a trade on one side barely excites the opposite side at all. This is consistent with order splitting / momentum-style clustering of same-direction aggressive flow, rather than a liquidity-replenishment or mean-reversion mechanism (which would instead predict strong cross-side excitation as one side's aggression pulls in opposing liquidity). This also reframes the earlier single-stream branching ratio (≈0.39): it is close to the *average* of the two same-side terms (0.338, 0.414), suggesting the single-stream model was implicitly averaging over two similar-magnitude same-side effects while being nearly blind to the (much smaller) cross-side interaction.
+
+---
+
 ## Current Findings
 
 The preliminary analysis suggests that BTC/USDT trade arrivals exhibit strong temporal structure. The current diagnostics show:
@@ -685,12 +822,18 @@ The first round of planned work — fitting the Hawkes process to the observed e
 - [x] Test robustness to the definition of an "event".
 - [x] Test robustness across different time windows.
 - [x] Extend the kernel beyond a single exponential (power-law/Omori kernel) and compare quantitatively.
+- [x] Constrain the optimizer to the stable region ($n<1$) by construction, with multi-start initialization.
+- [x] Evaluate the model out-of-sample (chronological split and rolling block folds), not just in-sample.
+- [x] Quantify parameter uncertainty (asymptotic Hessian-based CIs and model-free block-based spread).
+- [x] Extend the model to distinguish buy- and sell-initiated order arrivals (bivariate Hawkes with a 2×2 excitation matrix).
 
 Remaining/open directions:
 
 - [ ] Fit a time-varying-baseline Hawkes model $\mu(t)$ directly, rather than only detecting drift after the fact via rolling sub-window fits — the nonstationarity findings above suggest this is likely to close more of the residual gap than further kernel-shape changes.
-- [ ] Extend the model to distinguish buy- and sell-initiated order arrivals (a multivariate/marked Hawkes process), to test whether excitation is symmetric or side-dependent.
+- [ ] Give the bivariate model independent decay rates per kernel (currently shared for tractability — see [Buy/Sell Bivariate Hawkes Model](#buysell-bivariate-hawkes-model)) to test whether same-side and cross-side excitation decay at different speeds, not just different strengths.
 - [ ] Investigate whether same-timestamp trade splitting (83.5% of trades, see [Robustness to Event Definition](#robustness-to-event-definition)) can be modeled explicitly (e.g. as a compound/marked event with a size mark) rather than only handled by choice of event definition.
+- [x] Add unit tests (including regression tests for the two bugs found in review), CI, a `pyproject.toml`, and a benchmark of the O(n²) vs O(n) intensity implementations — see the [Development](#development) section below.
+- [ ] Move to a fully installable nested package layout (`src/hawkes_microstructure/`) — deliberately deferred; see [Development](#development) for why.
 
 ---
 
@@ -702,11 +845,48 @@ The ultimate goal is not simply to fit a Hawkes process, but to quantify **marke
 - **How quickly does this effect decay?** Very fast — a half-life on the order of 0.01 seconds under both the exponential and power-law kernels, concentrated within the 0.1 ms–1 s range examined in the aftershock analysis.
 - **What fraction of observed activity can be attributed to endogenous excitation?** The branching ratio $n$ is exactly this quantity: roughly **39%** of events are, in expectation, triggered by prior events rather than the exogenous baseline, under the most defensible event definition.
 - **Does excitation differ across market conditions?** Yes — both the rolling-window and block-wise fits show it varies substantially over just a 16-hour sample; the process is not stationary.
-- **Are buy and sell orders characterized by different excitation dynamics?** Not yet tested — this remains the main open extension (see [Next Steps](#next-steps)).
+- **Are buy and sell orders characterized by different excitation dynamics?** Yes, dramatically: the bivariate model finds same-side excitation (buy→buy ≈ 0.34, sell→sell ≈ 0.41) is ≈42× stronger than cross-side excitation (≈0.008–0.01) — self-excitation here is almost entirely a same-side phenomenon, not a liquidity-replenishment effect (see [Buy/Sell Bivariate Hawkes Model](#buysell-bivariate-hawkes-model)).
 
 The project treats the Hawkes process as a quantitative framework for studying **order-flow clustering and market microstructure dynamics**, and now has a validated, fitted, and stress-tested model rather than only qualitative motivation.
 
 > **Working conclusion (current stage):** BTC/USDT market-order arrivals are self-exciting and clearly better described by a Hawkes process than a Poisson process — this holds after maximum-likelihood fitting, formal goodness-of-fit testing, and robustness checks across event definitions and time windows, not just from qualitative clustering diagnostics. The magnitude of the effect (branching ratio ≈ 0.39) is real but sensitive to how an "event" is defined, and the effect itself is **not stable over time**: mu, alpha, and beta all drift over the ≈16-hour sample. A single exponential (or power-law) kernel captures the bulk of the self-excitation but leaves residual autocorrelation and an aftershock-rate mismatch unexplained; the evidence points toward a **time-varying baseline/excitation** as the more likely remaining gap, rather than the kernel's functional shape.
+
+---
+
+## Development
+
+### Tests
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+`tests/` covers the properties most likely to break silently in a point-process codebase: the O(n²) direct and O(n) recursive intensity implementations agreeing exactly, the closed-form integrated intensity matching numerical quadrature, the Hawkes log-likelihood reducing to the Poisson log-likelihood at `alpha = 0`, MLE recovering known parameters from simulated data, time-rescaled residuals from a correctly-specified simulated model behaving like Exp(1), and — most importantly — **regression tests for the two bugs found during external review** (see [Current Findings](#current-findings)): the autocorrelation index-alignment bug and the Fano-factor partial-window leak. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs this suite on every push.
+
+### Benchmark
+
+```bash
+PYTHONPATH=src python src/benchmark_recursion.py
+```
+
+```text
+  n events   naive O(n^2) (s)   recursive O(n) (s)    speedup
+     1,000             0.0068               0.0004      15.6x
+     2,000             0.0169               0.0008      20.5x
+     5,000             0.0793               0.0022      36.8x
+    10,000             0.2768               0.0042      65.4x
+    20,000             1.0300               0.0083     124.0x
+    50,000         infeasible               0.0213         --
+   100,000         infeasible               0.0428         --
+   221,114         infeasible               0.0935         --
+```
+
+The direct implementation's runtime grows quadratically; the recursive implementation scales linearly, which is what makes calibrating this model on a dataset this size (let alone a full month of trades) practical at all.
+
+### A note on project structure
+
+This repository intentionally keeps a **flat module layout** (`src/*.py`, imported via `PYTHONPATH=src`, no nested installable package) rather than the fuller `src/hawkes_microstructure/` package + `scripts/` + `results/` layout one might reach for in a production codebase. That was a deliberate scope decision, not an oversight: by this point the project has 14 interdependent modules (most import from `hawkes.py`, and several import from each other — `time_window_robustness.py`, `out_of_sample.py`, and `parameter_uncertainty.py` all import `nonstationarity.py`'s window-splitting helper, for instance). Converting that whole import graph to a nested package with relative imports, then re-validating all 14 modules and every README figure/number against the reorganized code, is real, high-blast-radius work whose payoff is organizational rather than empirical. `pyproject.toml` still declares proper project metadata and dependencies and configures pytest's `pythonpath`, so the project is easy to test and reason about without that larger restructure. If this project's scope grows further (e.g. the marked/compound-event extension in [Next Steps](#next-steps)), revisiting this decision would be reasonable.
 
 ---
 
