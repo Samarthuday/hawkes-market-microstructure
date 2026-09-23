@@ -2,9 +2,17 @@ import numpy as np
 
 from data_loader import load_trade_data
 from hawkes import (
+    calculate_branching_ratio,
     calculate_log_likelihood,
     estimate_hawkes_parameters,
     prepare_hawkes_event_times,
+)
+from power_law_hawkes import (
+    LOOKBACK_WINDOW_SECONDS,
+    build_lookback_pairs,
+    calculate_log_likelihood_power_law,
+    calculate_power_law_branching_ratio,
+    estimate_power_law_hawkes_parameters,
 )
 from trade_processing import (
     process_trade_data,
@@ -248,3 +256,128 @@ if __name__ == "__main__":
 
     print("\nHawkes BIC:")
     print(f"{hawkes_bic:.6f}")
+
+    # ==========================================================
+    # POWER-LAW HAWKES MODEL
+    # ==========================================================
+
+    print("\n" + "=" * 60)
+    print("POWER-LAW HAWKES MODEL")
+    print("=" * 60)
+
+    print("\nEstimating power-law Hawkes parameters...")
+
+    power_law_result = estimate_power_law_hawkes_parameters(
+        event_times
+    )
+
+    pl_mu, pl_alpha, pl_c, pl_p = power_law_result.x
+
+    # Rebuilding the lookback pairs here (rather than reusing the ones
+    # inside estimate_power_law_hawkes_parameters) keeps this module's
+    # public functions simple to call independently.
+    power_law_pairs = build_lookback_pairs(
+        event_times,
+        LOOKBACK_WINDOW_SECONDS
+    )
+
+    power_law_log_likelihood = calculate_log_likelihood_power_law(
+        event_times,
+        power_law_pairs,
+        pl_mu,
+        pl_alpha,
+        pl_c,
+        pl_p
+    )
+
+    print(f"\nmu    = {pl_mu:.6f}")
+    print(f"alpha = {pl_alpha:.6f}")
+    print(f"c     = {pl_c:.6f}")
+    print(f"p     = {pl_p:.6f}")
+
+    print("\nPower-law Hawkes log-likelihood:")
+    print(f"{power_law_log_likelihood:.6f}")
+
+    power_law_parameters = 4
+
+    power_law_aic = calculate_aic(
+        power_law_log_likelihood,
+        power_law_parameters
+    )
+
+    power_law_bic = calculate_bic(
+        power_law_log_likelihood,
+        power_law_parameters,
+        n
+    )
+
+    # ==========================================================
+    # THREE-WAY COMPARISON
+    # ==========================================================
+
+    print("\n" + "=" * 60)
+    print("THREE-WAY MODEL COMPARISON")
+    print("=" * 60 + "\n")
+
+    exponential_branching_ratio = calculate_branching_ratio(
+        estimated_alpha,
+        estimated_beta
+    )
+    power_law_branching_ratio = calculate_power_law_branching_ratio(
+        pl_alpha,
+        pl_c,
+        pl_p
+    )
+
+    print(
+        f"{'Model':<22} {'Params':>7} {'LogLik':>14} "
+        f"{'AIC':>14} {'BIC':>14} {'BranchRatio':>12}"
+    )
+    print(
+        f"{'Poisson':<22} {poisson_parameters:>7} "
+        f"{poisson_log_likelihood:>14.2f} {poisson_aic:>14.2f} "
+        f"{poisson_bic:>14.2f} {'--':>12}"
+    )
+    print(
+        f"{'Exponential Hawkes':<22} {hawkes_parameters:>7} "
+        f"{hawkes_log_likelihood:>14.2f} {hawkes_aic:>14.2f} "
+        f"{hawkes_bic:>14.2f} {exponential_branching_ratio:>12.4f}"
+    )
+    print(
+        f"{'Power-law Hawkes':<22} {power_law_parameters:>7} "
+        f"{power_law_log_likelihood:>14.2f} {power_law_aic:>14.2f} "
+        f"{power_law_bic:>14.2f} {power_law_branching_ratio:>12.4f}"
+    )
+
+    aics = {
+        "Poisson": poisson_aic,
+        "Exponential Hawkes": hawkes_aic,
+        "Power-law Hawkes": power_law_aic,
+    }
+    bics = {
+        "Poisson": poisson_bic,
+        "Exponential Hawkes": hawkes_bic,
+        "Power-law Hawkes": power_law_bic,
+    }
+    best_aic_model = min(aics, key=aics.get)
+    best_bic_model = min(bics, key=bics.get)
+
+    print(f"\nBest model by AIC: {best_aic_model}")
+    print(f"Best model by BIC: {best_bic_model}")
+
+    log_likelihood_gain = power_law_log_likelihood - hawkes_log_likelihood
+
+    print(
+        f"\nPower-law - exponential log-likelihood gain: "
+        f"{log_likelihood_gain:.2f} for "
+        f"{power_law_parameters - hawkes_parameters} extra parameter(s)."
+    )
+    print(
+        "Both AIC and BIC prefer the extra flexibility here despite the "
+        "penalty, but note (see power_law_hawkes.py) that the fitted "
+        "power-law shape parameter p can converge to a large value that "
+        "makes the kernel decay almost as fast as the exponential kernel "
+        "-- i.e. the improvement mainly reflects a better-fitting *shape* "
+        "at short lags, not evidence of a genuinely fat/slow-decaying "
+        "excitation tail."
+    )

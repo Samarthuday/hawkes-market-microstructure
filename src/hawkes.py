@@ -815,6 +815,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True, alpha=0.3)
 
+    plt.savefig("figures/hawkes_time_rescaled_histogram.png", dpi=150)
     plt.show()
 
     sorted_intervals = np.sort(rescaled_intervals)
@@ -856,6 +857,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True, alpha=0.3)
 
+    plt.savefig("figures/hawkes_qq_plot.png", dpi=150)
     plt.show()
 
     print("First 10:")

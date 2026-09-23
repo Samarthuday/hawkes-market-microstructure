@@ -300,6 +300,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
 
+    plt.savefig("figures/aftershock_empirical_vs_hawkes.png", dpi=150)
     plt.show()
 
     plt.figure(figsize=(8, 5))
@@ -320,6 +321,7 @@ if __name__ == "__main__":
 
     plt.grid(True, which="both", alpha=0.3)
 
+    plt.savefig("figures/aftershock_empirical.png", dpi=150)
     plt.show()
 
     plt.figure(figsize=(8, 5))
@@ -348,6 +350,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.grid(True, which="both", alpha=0.3)
 
+    plt.savefig("figures/aftershock_simulated_vs_theoretical.png", dpi=150)
     plt.show()
 
     print("\nNumber of real count values:")

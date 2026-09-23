@@ -330,6 +330,15 @@ def calculate_fano_factor(event_times, window_size):
         elapsed_seconds / window_size
     ).astype(int)
 
+    # Drop events falling in the trailing partial window (window
+    # index >= num_windows). np.bincount's minlength only sets a
+    # floor on the output length, not a ceiling: if any event lands
+    # in an incomplete final window, bincount would otherwise still
+    # create a bin for it, silently mixing a shorter-exposure partial
+    # window in with the complete Δ-second windows and biasing the
+    # mean/variance used below.
+    window_indices = window_indices[window_indices < num_windows]
+
     # Count how many events occur in each window.
     window_counts = np.bincount(
         window_indices,
@@ -442,12 +451,28 @@ def calculate_autocorrelation(event_count_series, lag):
     windows should have approximately zero autocorrelation.
     """
 
-    mean = event_count_series.mean()
+    # event_count_series is indexed by IntervalIndex (one interval per
+    # window), not a plain positional/integer index. Slicing it with
+    # event_count_series[:-lag] and event_count_series[lag:] still
+    # selects the right windows positionally, but the two resulting
+    # Series carry DIFFERENT-but-overlapping IntervalIndex labels.
+    # Multiplying two pandas Series aligns them by label, not by
+    # position -- so wherever a label is shared by both slices, pandas
+    # multiplies the (unchanged) value at that label by itself rather
+    # than by the value lag steps away, and positions with no matching
+    # label become NaN (silently dropped by a NaN-skipping sum). The
+    # net effect was computing something close to Var(X) instead of
+    # Cov(X_t, X_{t+k}), which is why this used to report ~0.99 at
+    # every lag regardless of the data. Converting to a plain numpy
+    # array first forces purely positional arithmetic.
+    values = event_count_series.to_numpy()
+
+    mean = values.mean()
 
     # Variance of the event-count series.
-    variance = np.var(event_count_series)
+    variance = np.var(values)
 
-    n = len(event_count_series)
+    n = len(values)
 
     if n <= lag:
         raise ValueError(
@@ -459,8 +484,8 @@ def calculate_autocorrelation(event_count_series, lag):
     # γ(k) =
     # 1/(n-k) Σ [X_t - μ][X_(t+k) - μ]
     autocovariance = np.sum(
-        (event_count_series[:-lag] - mean)
-        * (event_count_series[lag:] - mean)
+        (values[:-lag] - mean)
+        * (values[lag:] - mean)
     ) / (n - lag)
 
     # Autocorrelation:
