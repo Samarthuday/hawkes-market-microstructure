@@ -1,6 +1,8 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from scipy.stats import expon, kstest
 
 from data_loader import load_trade_data
 from trade_processing import (
@@ -205,6 +207,40 @@ def calculate_hawkes_intensity_series_fast(
     intensities = mu + np.array(excitations)
 
     return intensities
+
+def calculate_time_rescaled_intervals(
+    event_times,
+    mu,
+    alpha,
+    beta
+):
+    rescaled_intervals = [mu * event_times[0]]
+
+    excitation = 0.0
+
+    for i in range(1, len(event_times)):
+        delta_t = event_times[i] - event_times[i - 1]
+
+        integrated_excitation = (
+            (alpha + excitation)
+            / beta
+            * (
+                1 - np.exp(-beta * delta_t)
+            )
+        )
+
+        rescaled_interval = (
+            mu * delta_t
+            + integrated_excitation
+        )
+
+        rescaled_intervals.append(rescaled_interval)
+
+        excitation = (
+            alpha + excitation
+        ) * np.exp(-beta * delta_t)
+
+    return np.array(rescaled_intervals)
 
 
 def calculate_log_intensity_sum(event_times, mu, alpha, beta):
@@ -682,9 +718,9 @@ if __name__ == "__main__":
     print("\nHawkes process stable:")
     print(stable)
 
-    mu = 2.301353
-    alpha = 23.225818
-    beta = 59.767895
+    mu = estimated_mu
+    alpha = estimated_alpha
+    beta = estimated_beta
     observation_time = 10000.0
     seed = 42
 
@@ -696,11 +732,151 @@ if __name__ == "__main__":
         seed=42
     )
 
-    print("Number of simulated events:")
-    print(len(simulated_events))
+    simulated_events = np.array(simulated_events)
 
-    print("First 10 simulated events:")
-    print(simulated_events[:10])
+    simulated_rescaled = calculate_time_rescaled_intervals(
+        simulated_events,
+        mu,
+        alpha,
+        beta
+    )
 
-    print("Last simulated event:")
-    print(simulated_events[-1])
+    simulated_rescaled = simulated_rescaled[1:]
+
+    print("\nSimulated Hawkes time-rescaled intervals:")
+    print("Number:", len(simulated_rescaled))
+    print("Mean:", np.mean(simulated_rescaled))
+    print("Variance:", np.var(simulated_rescaled))
+
+    simulated_autocorrelations = []
+
+    for lag in range(1, 6):
+        correlation = np.corrcoef(
+            simulated_rescaled[:-lag],
+            simulated_rescaled[lag:]
+        )[0, 1]
+
+        simulated_autocorrelations.append(correlation)
+
+    print("Simulated Hawkes autocorrelations:")
+
+    for lag, correlation in enumerate(
+        simulated_autocorrelations,
+        start=1
+    ):
+        print(f"Lag {lag}: {correlation:.6f}")
+
+    rescaled_intervals = calculate_time_rescaled_intervals(
+        event_times,
+        mu,
+        alpha,
+        beta
+    )
+
+    rescaled_intervals = rescaled_intervals[1:]
+
+    print("\nTime-rescaled intervals:")
+    print("Number of intervals:", len(rescaled_intervals))
+    print("Mean:", np.mean(rescaled_intervals))
+    print("Variance:", np.var(rescaled_intervals))
+    ks_statistic, ks_pvalue = kstest(
+        rescaled_intervals,
+        "expon",
+        args=(0, 1)
+    )
+
+    print("KS statistic:", ks_statistic)
+    print("KS p-value:", ks_pvalue)
+    plt.figure(figsize=(8, 5))
+
+    plt.hist(
+        rescaled_intervals,
+        bins=100,
+        density=True,
+        alpha=0.7,
+        label="Time-rescaled intervals"
+    )
+
+    x = np.linspace(
+        0,
+        np.percentile(rescaled_intervals, 99),
+        500
+    )
+
+    plt.plot(
+        x,
+        np.exp(-x),
+        label="Exp(1)"
+    )
+
+    plt.xlabel("Time-rescaled interval")
+    plt.ylabel("Density")
+    plt.title("Time-Rescaled Intervals vs Exp(1)")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.show()
+
+    sorted_intervals = np.sort(rescaled_intervals)
+
+    probabilities = (
+        np.arange(1, len(sorted_intervals) + 1)
+        / (len(sorted_intervals) + 1)
+    )
+
+    theoretical_quantiles = expon.ppf(
+        probabilities
+    )
+
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(
+        theoretical_quantiles,
+        sorted_intervals,
+        marker=".",
+        markersize=1,
+        linestyle="none",
+        alpha=0.3
+    )
+
+    max_value = max(
+        theoretical_quantiles[-1],
+        sorted_intervals[-1]
+    )
+
+    plt.plot(
+        [0, max_value],
+        [0, max_value],
+        label="y = x"
+    )
+
+    plt.xlabel("Theoretical Exp(1) quantiles")
+    plt.ylabel("Observed time-rescaled quantiles")
+    plt.title("Q-Q Plot of Time-Rescaled Intervals")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    plt.show()
+
+    print("First 10:")
+    print(rescaled_intervals[:10])
+
+    autocorrelations = []
+
+    for lag in range(1, 21):
+        correlation = np.corrcoef(
+            rescaled_intervals[:-lag],
+            rescaled_intervals[lag:]
+        )[0, 1]
+
+        autocorrelations.append(correlation)
+
+    print("\nTime-rescaled interval autocorrelations:")
+
+    for lag, correlation in enumerate(
+        autocorrelations,
+        start=1
+    ):
+        print(
+            f"Lag {lag}: {correlation:.6f}"
+        )
