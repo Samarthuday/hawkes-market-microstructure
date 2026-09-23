@@ -87,7 +87,11 @@ def calculate_shared_beta_bases(buy_times, sell_times, beta):
 
     order = np.argsort(all_times, kind="stable")
     sorted_times = all_times[order]
-    sorted_is_sell = is_sell[order]
+    # Plain Python list, not a numpy array: this is accessed one
+    # scalar element at a time in the tight loop below, and native
+    # list/bool indexing has far less per-access overhead there than
+    # repeated single-element numpy indexing.
+    sorted_is_sell = is_sell[order].tolist()
 
     base_buy_pre_sorted = np.empty(len(sorted_times))
     base_sell_pre_sorted = np.empty(len(sorted_times))
@@ -96,7 +100,10 @@ def calculate_shared_beta_bases(buy_times, sell_times, beta):
     running_sell = 0.0
     previous_time = sorted_times[0]
 
-    for i in range(len(sorted_times)):
+    n_merged = len(sorted_times)
+    i = 0
+
+    while i < n_merged:
 
         t = sorted_times[i]
         delta_t = t - previous_time
@@ -105,15 +112,38 @@ def calculate_shared_beta_bases(buy_times, sell_times, beta):
         running_buy *= decay
         running_sell *= decay
 
-        base_buy_pre_sorted[i] = running_buy
-        base_sell_pre_sorted[i] = running_sell
+        # Events sharing the exact same timestamp t (a real, if rare,
+        # occurrence: a buy-initiated and sell-initiated trade can
+        # print in the same microsecond) are a "tie group". Every
+        # event in the group must see the SAME pre-event state --
+        # computed from strictly *before* t, not from partway through
+        # processing the group -- otherwise whichever side happened
+        # to be concatenated first would spuriously appear to excite
+        # the other at Δt=0, breaking the t_j < t_i requirement and
+        # introducing an arbitrary buy-vs-sell ordering asymmetry.
+        #
+        # The vast majority of groups have size 1 (ties are rare --
+        # 63 out of ~221k events in the real dataset), so this counts
+        # sides with a plain Python loop rather than numpy slicing:
+        # slicing into small numpy sub-arrays and calling
+        # count_nonzero on every single event (not just tied ones)
+        # was roughly 4x slower overall than the pre-fix version that
+        # only ever touched scalars.
+        j = i
+        sell_count = 0
+        while j < n_merged and sorted_times[j] == t:
+            if sorted_is_sell[j]:
+                sell_count += 1
+            j += 1
 
-        if sorted_is_sell[i]:
-            running_sell += 1.0
-        else:
-            running_buy += 1.0
+        base_buy_pre_sorted[i:j] = running_buy
+        base_sell_pre_sorted[i:j] = running_sell
+
+        running_sell += sell_count
+        running_buy += (j - i) - sell_count
 
         previous_time = t
+        i = j
 
     # Scatter back from sorted (merged) order into the original
     # concatenated [buy_times..., sell_times...] order.
@@ -255,6 +285,97 @@ def estimate_bivariate_hawkes_parameters(buy_times, sell_times, beta0_grid=(10.0
     return best_result
 
 
+def _negative_log_likelihood_no_cross_excitation(log_params, buy_times, sell_times):
+    """
+    The restricted model used for the likelihood-ratio test below:
+    alpha_BS = alpha_SB = 0 fixed (no cross-side excitation at all),
+    leaving only mu_B, mu_S, alpha_BB, alpha_SS, beta free.
+    """
+
+    log_mu_B, log_mu_S, log_alpha_BB, log_alpha_SS, log_beta = log_params
+
+    mu_B, mu_S, alpha_BB, alpha_SS, beta = np.exp(log_params)
+
+    return -calculate_bivariate_log_likelihood(
+        buy_times, sell_times,
+        mu_B, mu_S,
+        alpha_BB, 0.0, 0.0, alpha_SS,
+        beta
+    )
+
+
+def estimate_no_cross_excitation_parameters(buy_times, sell_times, beta0_grid=(10.0, 60.0)):
+    """
+    Fit the restricted (same-side-only) model for the likelihood-
+    ratio test in test_cross_excitation_significance.
+    """
+
+    buy_rate = len(buy_times) / max(buy_times[-1], sell_times[-1])
+    sell_rate = len(sell_times) / max(buy_times[-1], sell_times[-1])
+
+    best_result = None
+    best_log_params = None
+
+    for beta0 in beta0_grid:
+
+        alpha0 = 0.2 * beta0
+
+        initial_log_params = np.log([
+            0.5 * buy_rate, 0.5 * sell_rate, alpha0, alpha0, beta0
+        ])
+
+        result = minimize(
+            _negative_log_likelihood_no_cross_excitation,
+            initial_log_params,
+            args=(buy_times, sell_times),
+            method="BFGS"
+        )
+
+        if not np.isfinite(result.fun):
+            continue
+
+        if best_result is None or result.fun < best_result.fun:
+            best_result = result
+            best_log_params = result.x
+
+    best_result.x = np.exp(best_log_params)
+
+    return best_result
+
+
+def test_cross_excitation_significance(buy_times, sell_times, full_log_likelihood):
+    """
+    Likelihood-ratio test of H0: alpha_BS = alpha_SB = 0 (no cross-
+    side excitation at all) against the unrestricted bivariate model.
+    Since the fitted cross-side alphas are small but the log-space
+    parameterization cannot represent alpha = 0 exactly during the
+    unrestricted fit, this restricted-vs-unrestricted comparison is
+    the honest way to ask whether that small cross-side excitation is
+    actually distinguishable from zero, rather than reading it off a
+    parameterization that can only ever return values > 0.
+
+        LR = 2 * (LL_full - LL_restricted) ~ chi2(df=2) under H0
+    """
+
+    from scipy.stats import chi2
+
+    restricted_result = estimate_no_cross_excitation_parameters(
+        buy_times, sell_times
+    )
+    restricted_log_likelihood = -restricted_result.fun
+
+    lr_statistic = 2 * (full_log_likelihood - restricted_log_likelihood)
+    p_value = chi2.sf(lr_statistic, df=2)
+
+    return {
+        "restricted_params": restricted_result.x,
+        "restricted_log_likelihood": restricted_log_likelihood,
+        "full_log_likelihood": full_log_likelihood,
+        "lr_statistic": lr_statistic,
+        "p_value": p_value,
+    }
+
+
 def calculate_branching_matrix(alpha_BB, alpha_BS, alpha_SB, alpha_SS, beta):
     """
     Build the 2x2 excitation ("branching") matrix
@@ -359,4 +480,35 @@ if __name__ == "__main__":
             "more likely to trigger a trade on the OPPOSITE side "
             "(consistent with e.g. liquidity replenishment / mean "
             "reversion at the microstructure level)."
+        )
+
+    print("\n" + "=" * 60)
+    print("LIKELIHOOD-RATIO TEST: IS CROSS-SIDE EXCITATION REAL?")
+    print("=" * 60)
+    print(
+        "\nH0: alpha_BS = alpha_SB = 0 (no cross-side excitation at all)"
+    )
+
+    lr_result = test_cross_excitation_significance(
+        buy_times, sell_times, full_log_likelihood=-result.fun
+    )
+
+    print(f"\nRestricted-model log-likelihood: {lr_result['restricted_log_likelihood']:.4f}")
+    print(f"Full-model log-likelihood:        {lr_result['full_log_likelihood']:.4f}")
+    print(f"LR statistic (df=2):              {lr_result['lr_statistic']:.4f}")
+    print(f"p-value:                          {lr_result['p_value']:.6g}")
+
+    if lr_result["p_value"] < 0.05:
+        print(
+            "\nThe unrestricted model fits significantly better than the "
+            "no-cross-excitation model (p < 0.05): the small cross-side "
+            "coefficients are statistically distinguishable from zero, "
+            "even though they are economically tiny relative to the "
+            "same-side coefficients."
+        )
+    else:
+        print(
+            "\nThe unrestricted model does NOT fit significantly better "
+            "than the no-cross-excitation model: the data cannot rule "
+            "out zero cross-side excitation."
         )

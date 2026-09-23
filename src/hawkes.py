@@ -471,9 +471,11 @@ def estimate_hawkes_parameters(event_times):
     The optimization is run in an unconstrained reparameterization
     that guarantees stability (n = alpha / beta < 1) for every
     candidate parameter vector the optimizer can propose (see
-    _theta_to_hawkes_params), from a grid of 9 initial guesses
-    spanning small/medium/large branching ratio and decay rate. The
-    best (lowest negative log-likelihood) converged fit is kept.
+    _theta_to_hawkes_params), from a grid of 3 initial guesses
+    spanning small/medium/large branching ratio (see
+    _build_multistart_initial_guesses for why beta0 itself is not
+    also varied). The best (lowest negative log-likelihood)
+    converged fit is kept.
 
     Returns a scipy OptimizeResult whose `.x` is [mu, alpha, beta] in
     the original, interpretable parameterization -- callers do not
