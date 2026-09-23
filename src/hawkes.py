@@ -414,6 +414,35 @@ def is_hawkes_stable(alpha, beta):
 
     return branching_ratio < 1
 
+def simulate_hawkes(mu, alpha, beta, observation_time, seed=None):
+    rng = np.random.default_rng(seed)
+
+    event_times = []
+    current_time = 0.0
+    excitation = 0.0
+    upper_intensity = mu
+
+    while True:
+        delta_t = rng.exponential(1 / upper_intensity)
+        candidate_time = current_time + delta_t
+
+        if candidate_time > observation_time:
+            break
+
+        excitation *= np.exp(
+            -beta * (candidate_time - current_time)
+        )
+
+        intensity = mu + excitation
+
+        if rng.uniform() < intensity / upper_intensity:
+            event_times.append(candidate_time)
+            excitation += alpha
+
+        current_time = candidate_time
+        upper_intensity = mu + excitation
+
+    return event_times
 
 if __name__ == "__main__":
 
@@ -652,3 +681,26 @@ if __name__ == "__main__":
 
     print("\nHawkes process stable:")
     print(stable)
+
+    mu = 2.301353
+    alpha = 23.225818
+    beta = 59.767895
+    observation_time = 10000.0
+    seed = 42
+
+    simulated_events = simulate_hawkes(
+        mu,
+        alpha,
+        beta,
+        observation_time,
+        seed=42
+    )
+
+    print("Number of simulated events:")
+    print(len(simulated_events))
+
+    print("First 10 simulated events:")
+    print(simulated_events[:10])
+
+    print("Last simulated event:")
+    print(simulated_events[-1])

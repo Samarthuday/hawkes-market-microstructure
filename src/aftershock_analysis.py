@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from data_loader import load_trade_data
-from hawkes import prepare_hawkes_event_times
+from hawkes import prepare_hawkes_event_times, simulate_hawkes
 from trade_processing import process_trade_data
 
 
@@ -203,6 +203,63 @@ if __name__ == "__main__":
     print("Mean rate:", mean_rate)
     print("Response timescale:", 1 / (beta - alpha))
 
+    simulated_events = simulate_hawkes(
+        mu,
+        alpha,
+        beta,
+        10_000.0,
+        seed=42
+    )
+
+    simulated_event_times = np.array(simulated_events)
+
+    print("\nSimulated Hawkes process:")
+    print("Number of simulated events:")
+    print(len(simulated_event_times))
+
+    print("First 10 simulated events:")
+    print(simulated_event_times[:10])
+
+    print("Last simulated event:")
+    print(simulated_event_times[-1])
+
+    simulated_counts = calculate_aftershock_counts(
+        simulated_event_times,
+        lag_bins
+    )
+
+    simulated_exposure = calculate_aftershock_exposure(
+        simulated_event_times,
+        lag_bins
+    )
+
+    simulated_rate = calculate_aftershock_rate(
+        simulated_counts,
+        simulated_exposure
+    )
+
+    print("\nFirst 10 simulated aftershock rates:")
+    print(simulated_rate[:10])
+
+    print("\nLast 5 simulated aftershock rates:")
+    print(simulated_rate[-5:])
+
+    simulated_ratio = simulated_rate / theoretical_rate
+
+    simulated_log_error = (
+        np.log(simulated_rate)
+        - np.log(theoretical_rate)
+    )
+
+    print("\nFirst 10 simulated / Hawkes ratios:")
+    print(simulated_ratio[:10])
+
+    print("Last 5 simulated / Hawkes ratios:")
+    print(simulated_ratio[-5:])
+
+    print("\nMean absolute simulated log error:")
+    print(np.mean(np.abs(simulated_log_error)))
+
     log_error = np.log(real_rate) - np.log(theoretical_rate)
     print("Mean absolute log error:")
     print(np.mean(np.abs(log_error)))
@@ -261,6 +318,34 @@ if __name__ == "__main__":
     plt.ylabel("Aftershock rate (events/second)")
     plt.title("Empirical Aftershock Rate")
 
+    plt.grid(True, which="both", alpha=0.3)
+
+    plt.show()
+
+    plt.figure(figsize=(8, 5))
+
+    plt.plot(
+        lag_centers,
+        simulated_rate,
+        marker="o",
+        markersize=4,
+        label="Simulated Hawkes"
+    )
+
+    plt.plot(
+        lag_centers,
+        theoretical_rate,
+        label="Theoretical Hawkes"
+    )
+
+    plt.xscale("log")
+    plt.yscale("log")
+
+    plt.xlabel("Lag (seconds)")
+    plt.ylabel("Conditional event rate (events/second)")
+    plt.title("Simulated Hawkes vs Theoretical Aftershock Rate")
+
+    plt.legend()
     plt.grid(True, which="both", alpha=0.3)
 
     plt.show()
